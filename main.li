@@ -1,0 +1,13 @@
+// hello world in lily!
+
+var GLOBAL = "World";
+
+fun say_hello(name)
+    write "Hello, ", name, "!\n";
+end
+
+fun main()
+    var a = 33 * 2 + 3;
+    say_hello(GLOBAL);
+    write a, "\n";
+end
