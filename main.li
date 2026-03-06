@@ -9,5 +9,11 @@ end
 fun main()
     var a = 33 * 2 + 3;
     say_hello(GLOBAL);
-    write a, "\n";
+    if a == 69
+        write "a == 69\n";
+    else if a < 69
+        write "a < 69\n";
+    else
+        write "a > 69\n";
+    end
 end

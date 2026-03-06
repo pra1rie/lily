@@ -6,7 +6,7 @@ use std::fs;
 
 const CHAR_OPERATORS: &str = "(){}[];:,.+-*/%!=<>&|^~";
 const OPERATORS: [&str; 8] = ["==", "!=", "<=", ">=", "&&", "||", "<<", ">>"];
-const KEYWORDS: [&str; 5] = ["write", "var", "fun", "end", "nil"];
+const KEYWORDS: [&str; 8] = ["write", "var", "fun", "end", "nil", "if", "else", "while"];
 
 #[derive(PartialEq, Clone, Debug)]
 enum Token {
@@ -186,6 +186,12 @@ enum BinaryOp {
 }
 
 #[derive(PartialEq, Clone, Debug)]
+struct Condition {
+    condition: Box<Expr>,
+    body: Vec<Stmt>,
+}
+
+#[derive(PartialEq, Clone, Debug)]
 enum Expr {
     LitNil,
     LitString(String),
@@ -198,14 +204,16 @@ enum Expr {
     Unary(UnaryOp, Box<Expr>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 enum Stmt {
     Write(Vec<Expr>),
     DefineFun(Function),
+    If(Vec<Condition>, Vec<Stmt>),
+    // While(Condition),
     Expr(Expr),
 }
 
-#[derive(Clone, Debug)]
+#[derive(PartialEq, Clone, Debug)]
 struct Function {
     name: String,
     args: Vec<String>,
@@ -477,10 +485,26 @@ impl Parser {
         }))
     }
 
+    fn parse_body(&mut self, is_if: bool) -> Vec<Stmt> {
+        let mut body = Vec::new();
+        while self.cur().is_some_and(|c| c != Token::Keyword("end".to_string())) {
+            if is_if && self.cur().is_some_and(|c| c == Token::Keyword("else".to_string())) {
+                self.pos -= 1;
+                break;
+            }
+            let stmt = self.parse_stmt();
+            match stmt {
+                Some(s) => body.push(s),
+                None => break,
+            }
+        }
+        self.pos += 1;
+        body
+    }
+
     fn parse_keyword_fun(&mut self) -> Option<Stmt> {
         let name = self.get_identifier();
         let mut args = Vec::new();
-        let mut body = Vec::new();
         self.pos += 1;
 
         if self.cur() != Some(Token::Operator("(".to_string())) {
@@ -504,17 +528,31 @@ impl Parser {
             return None;
         }
         self.pos += 1;
+        let body = self.parse_body(false);
+        Some(Stmt::DefineFun(Function{ name: name.clone(), args: args, body: body }))
+    }
 
-        while self.cur().is_some_and(|c| c != Token::Keyword("end".to_string())) {
-            let stmt = self.parse_stmt();
-            match stmt {
-                Some(s) => body.push(s),
-                None => break,
+    fn parse_keyword_if(&mut self) -> Option<Stmt> {
+        let mut conditions = Vec::<Condition>::new();
+        let mut else_condition = Vec::<Stmt>::new();
+
+        let if_condition = self.parse_expr();
+        let if_body = self.parse_body(true);
+        conditions.push(Condition{ condition: Box::new(if_condition), body: if_body });
+        while self.cur().is_some_and(|c| c == Token::Keyword("else".to_string())) {
+            self.pos += 1;
+            if self.cur().is_some_and(|c| c == Token::Keyword("if".to_string())) {
+                self.pos += 1;
+                let expr = self.parse_expr();
+                let body = self.parse_body(true);
+                conditions.push(Condition{ condition: Box::new(expr), body: body });
+            } else {
+                else_condition = self.parse_body(true);
+                break;
             }
         }
-        self.pos += 1;
 
-        Some(Stmt::DefineFun(Function{ name: name.clone(), args: args, body: body }))
+        Some(Stmt::If(conditions, else_condition))
     }
 
     fn parse_keyword_write(&mut self) -> Option<Stmt> {
@@ -532,6 +570,7 @@ impl Parser {
         match keyword.as_str() {
             "var" => self.parse_keyword_var(false),
             "write" => self.parse_keyword_write(),
+            "if" => self.parse_keyword_if(),
             _ => {
                 eprintln!("error: unexpected keyword '{}'", keyword);
                 None
@@ -572,12 +611,20 @@ impl Parser {
                 None
             }
         };
-
-        if !self.cur().is_some_and(|tok| tok == Token::Operator(";".to_string())) {
-            eprintln!("error: missing ';'");
-            process::exit(1);
+        match stmt.clone() {
+            None => {
+                process::exit(1);
+            },
+            Some(Stmt::If(_, _)) => {},
+            // Some(Stmt::While(_, _)) => {},
+            _ => {
+                if !self.cur().is_some_and(|tok| tok == Token::Operator(";".to_string())) {
+                    eprintln!("error: missing ';'");
+                    process::exit(1);
+                }
+                self.pos += 1;
+            }
         }
-        self.pos += 1;
         stmt
     }
 
@@ -815,20 +862,41 @@ impl Interpreter {
         }
     }
 
+    fn exec_stmt(&mut self, stmt: Stmt) {
+        match stmt {
+            Stmt::DefineFun(fun) => {
+                self.global.funs.insert(fun.name.clone(), fun);
+            },
+            Stmt::Write(body) => {
+                for expr in body.iter() {
+                    print!("{}", self.exec_expr(expr.clone()));
+                }
+            },
+            Stmt::If(c, e) => {
+                for if_cond in c {
+                    let res = self.exec_expr(*if_cond.condition);
+                    if Value::is_truthy(res) {
+                        for stmt in if_cond.body {
+                            self.exec_stmt(stmt);
+                        }
+                    return;
+                    }
+                }
+                for stmt in e {
+                    self.exec_stmt(stmt);
+                }
+            },
+            Stmt::Expr(expr) => {
+                _ = self.exec_expr(expr);
+            },
+        }
+    }
+
     fn interpret(&mut self) {
         while self.cur().is_some() {
-            match self.cur().unwrap() {
-                Stmt::DefineFun(fun) => {
-                    self.global.funs.insert(fun.name.clone(), fun);
-                },
-                Stmt::Write(body) => {
-                    for expr in body.iter() {
-                        print!("{}", self.exec_expr(expr.clone()));
-                    }
-                },
-                Stmt::Expr(expr) => {
-                    _ = self.exec_expr(expr);
-                },
+            match self.cur() {
+                None => {},
+                Some(s) => self.exec_stmt(s),
             }
             self.pos += 1;
         }
