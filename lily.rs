@@ -209,7 +209,7 @@ enum Stmt {
     Write(Vec<Expr>),
     DefineFun(Function),
     If(Vec<Condition>, Vec<Stmt>),
-    // While(Condition),
+    While(Condition),
     Expr(Expr),
 }
 
@@ -555,6 +555,12 @@ impl Parser {
         Some(Stmt::If(conditions, else_condition))
     }
 
+    fn parse_keyword_while(&mut self) -> Option<Stmt> {
+        let cond = self.parse_expr();
+        let body = self.parse_body(false);
+        Some(Stmt::While(Condition{ condition: Box::new(cond), body: body }))
+    }
+
     fn parse_keyword_write(&mut self) -> Option<Stmt> {
         let mut vec = Vec::<Expr>::new();
         vec.push(self.parse_expr());
@@ -571,6 +577,7 @@ impl Parser {
             "var" => self.parse_keyword_var(false),
             "write" => self.parse_keyword_write(),
             "if" => self.parse_keyword_if(),
+            "while" => self.parse_keyword_while(),
             _ => {
                 eprintln!("error: unexpected keyword '{}'", keyword);
                 None
@@ -616,7 +623,7 @@ impl Parser {
                 process::exit(1);
             },
             Some(Stmt::If(_, _)) => {},
-            // Some(Stmt::While(_, _)) => {},
+            Some(Stmt::While(_)) => {},
             _ => {
                 if !self.cur().is_some_and(|tok| tok == Token::Operator(";".to_string())) {
                     eprintln!("error: missing ';'");
@@ -884,6 +891,15 @@ impl Interpreter {
                 }
                 for stmt in e {
                     self.exec_stmt(stmt);
+                }
+            },
+            Stmt::While(c) => {
+                loop {
+                    let res = self.exec_expr(*c.clone().condition);
+                    if !Value::is_truthy(res) { break; }
+                    for stmt in &c.body {
+                        self.exec_stmt(stmt.clone());
+                    }
                 }
             },
             Stmt::Expr(expr) => {
