@@ -202,6 +202,8 @@ enum Expr {
     CallFun(String, Vec<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Unary(UnaryOp, Box<Expr>),
+    MakeList(Vec<Expr>),
+    GetListIndex(Box<Expr>, Box<Expr>),
 }
 
 #[derive(PartialEq, Clone, Debug)]
@@ -246,6 +248,36 @@ impl Parser {
         self.peek(0)
     }
 
+    fn parse_make_list(&mut self) -> Expr {
+        let mut list = Vec::<Expr>::new();
+        if self.cur().is_some_and(|c| c != Token::Operator("]".to_string())) {
+            list.push(self.parse_expr());
+            while self.cur().is_some_and(|c| c == Token::Operator(",".to_string())) {
+                self.pos += 1;
+                if self.cur().is_some_and(|c| c == Token::Operator("]".to_string())) {
+                    break;
+                }
+                list.push(self.parse_expr());
+            }
+        }
+        if !self.cur().is_some_and(|c| c == Token::Operator("]".to_string())) {
+            eprintln!("error: missing ']'");
+            process::exit(1);
+        }
+        self.pos += 1;
+        Expr::MakeList(list)
+    }
+
+    fn parse_get_list_index(&mut self, expr: Expr) -> Expr {
+        let index = self.parse_expr();
+        if self.cur().is_some_and(|c| c != Token::Operator("]".to_string())) {
+            eprintln!("error: missing ']'");
+            process::exit(1);
+        }
+        self.pos += 1;
+        Expr::GetListIndex(Box::new(expr), Box::new(index))
+    }
+
     fn parse_unary(&mut self, op: String) -> Expr {
         match op.as_str() {
             "(" => {
@@ -257,11 +289,12 @@ impl Parser {
                 self.pos += 1;
                 res
             },
+            "[" => self.parse_make_list(),
             "!" => Expr::Unary(UnaryOp::Negate, Box::new(self.parse_expr())),
             "-" => Expr::Unary(UnaryOp::Minus, Box::new(self.parse_expr())),
             "+" => Expr::Unary(UnaryOp::Plus, Box::new(self.parse_expr())),
             _ => {
-                eprintln!("error: unexpected {}", op);
+                eprintln!("error: unexpected '{}'", op);
                 process::exit(1);
             }
         }
@@ -298,7 +331,7 @@ impl Parser {
         }
     }
 
-    fn parse_term(&mut self) -> Expr {
+    fn parse_value(&mut self) -> Expr {
         let tok = self.cur().unwrap();
         self.pos += 1;
         match tok {
@@ -308,16 +341,26 @@ impl Parser {
             Token::Identifier(i) => self.parse_identifier(i),
             Token::Keyword(ref k) => {
                 if *k != "nil" {
-                    eprintln!("error: unexpected {}", tok);
+                    eprintln!("error: unexpected '{}'", tok);
                     process::exit(1);
                 } else {
                     Expr::LitNil
                 }
             },
             _ => {
-                eprintln!("error: unexpected {}", tok);
+                eprintln!("error: unexpected '{}'", tok);
                 process::exit(1);
             }
+        }
+    }
+
+    fn parse_term(&mut self) -> Expr {
+        let value = self.parse_value();
+        if self.cur().is_some_and(|c| c == Token::Operator("[".to_string())) {
+            self.pos += 1;
+            self.parse_get_list_index(value)
+        } else {
+            value
         }
     }
 
@@ -455,7 +498,7 @@ impl Parser {
         match self.cur() {
             Some(Token::Identifier(s)) => s.clone(),
             _ => {
-                eprintln!("error: unexpected {}", self.cur().unwrap());
+                eprintln!("error: unexpected '{}'", self.cur().unwrap());
                 process::exit(1);
             },
         }
@@ -670,6 +713,7 @@ enum Value {
     Nil,
     Number(f64),
     String(String),
+    List(Vec<Value>),
 }
 
 impl Value {
@@ -678,6 +722,7 @@ impl Value {
             Value::Nil => false,
             Value::Number(n) => n != (0 as f64),
             Value::String(s) => s.len() != 0,
+            Value::List(l)   => l.len() != 0,
         }
     }
 }
@@ -688,6 +733,14 @@ impl fmt::Display for Value {
             Value::Nil       => write!(f, "nil"),
             Value::Number(n) => write!(f, "{}", n),
             Value::String(s) => write!(f, "{}", s),
+            Value::List(l)   => {
+                let _ = write!(f, "[");
+                for (i, val) in l.into_iter().enumerate() {
+                    if i > 0 { let _ = write!(f, ", "); }
+                    let _ = write!(f, "{}", val);
+                }
+                write!(f, "]")
+            },
         }
     }
 }
@@ -887,6 +940,34 @@ impl Interpreter {
             Expr::Unary(o, v) => {
                 let val = self.exec_expr(*v);
                 self.exec_unary(o, val)
+            },
+            Expr::MakeList(l) => {
+                let mut val = Vec::new();
+                for expr in l {
+                    val.push(self.exec_expr(expr));
+                }
+                Value::List(val)
+            },
+            Expr::GetListIndex(l, i) => {
+                let value = self.exec_expr(*l);
+                let index = self.exec_expr(*i);
+                match value {
+                    Value::List(list) => {
+                        match index {
+                            Value::Number(i) => {
+                                list[i as usize].clone()
+                            },
+                            _ => {
+                                eprintln!("error: list index must be a number\n");
+                                process::exit(1);
+                            }
+                        }
+                    },
+                    v => {
+                        eprintln!("error: cannot index '{}'\n", v);
+                        process::exit(1);
+                    },
+                }
             },
         }
     }
