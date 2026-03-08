@@ -6,7 +6,7 @@ use std::fs;
 
 const CHAR_OPERATORS: &str = "(){}[];:,.+-*/%!=<>&|^~";
 const OPERATORS: [&str; 8] = ["==", "!=", "<=", ">=", "&&", "||", "<<", ">>"];
-const KEYWORDS: [&str; 8] = ["write", "var", "fun", "end", "nil", "if", "else", "while"];
+const KEYWORDS: [&str; 10] = ["write", "var", "fun", "end", "nil", "if", "else", "while", "return", "break"];
 
 #[derive(PartialEq, Clone, Debug)]
 enum Token {
@@ -210,6 +210,8 @@ enum Stmt {
     DefineFun(Function),
     If(Vec<Condition>, Vec<Stmt>),
     While(Condition),
+    Return(Option<Expr>),
+    Break,
     Expr(Expr),
 }
 
@@ -571,6 +573,17 @@ impl Parser {
         Some(Stmt::Write(vec))
     }
 
+    fn parse_keyword_break(&mut self) -> Option<Stmt> {
+        Some(Stmt::Break)
+    }
+
+    fn parse_keyword_return(&mut self) -> Option<Stmt> {
+        if self.cur().is_some_and(|c| c == Token::Operator(";".to_string())) {
+            return Some(Stmt::Return(None));
+        }
+        Some(Stmt::Return(Some(self.parse_expr())))
+    }
+
     fn parse_keyword(&mut self, keyword: String) -> Option<Stmt> {
         self.pos += 1;
         match keyword.as_str() {
@@ -578,6 +591,8 @@ impl Parser {
             "write" => self.parse_keyword_write(),
             "if" => self.parse_keyword_if(),
             "while" => self.parse_keyword_while(),
+            "break" => self.parse_keyword_break(),
+            "return" => self.parse_keyword_return(),
             _ => {
                 eprintln!("error: unexpected keyword '{}'", keyword);
                 None
@@ -677,6 +692,12 @@ impl fmt::Display for Value {
     }
 }
 
+enum Return {
+    NoReturn,
+    Break,
+    Return(Value),
+}
+
 #[derive(Clone)]
 struct Global {
     funs: HashMap<String, Function>,
@@ -747,8 +768,7 @@ impl Interpreter {
         for i in 0..args.len() {
             int.set_var(fun.args[i].clone(), args[i].clone());
         }
-        int.interpret();
-        None
+        int.interpret()
     }
 
     fn get_num(&mut self, val: Value) -> f64 {
@@ -854,8 +874,10 @@ impl Interpreter {
                 for arg in a {
                     args.push(self.exec_expr(arg));
                 }
-                self.call_fun(n, args);
-                Value::Nil
+                match self.call_fun(n, args) {
+                    None => Value::Nil,
+                    Some(v) => v
+                }
             },
             Expr::Binary(o, a, b) => {
                 let val_a = self.exec_expr(*a);
@@ -869,53 +891,85 @@ impl Interpreter {
         }
     }
 
-    fn exec_stmt(&mut self, stmt: Stmt) {
+    fn exec_stmt(&mut self, stmt: Stmt) -> Return {
         match stmt {
             Stmt::DefineFun(fun) => {
                 self.global.funs.insert(fun.name.clone(), fun);
+                Return::NoReturn
             },
             Stmt::Write(body) => {
                 for expr in body.iter() {
                     print!("{}", self.exec_expr(expr.clone()));
                 }
+                Return::NoReturn
             },
             Stmt::If(c, e) => {
                 for if_cond in c {
                     let res = self.exec_expr(*if_cond.condition);
                     if Value::is_truthy(res) {
                         for stmt in if_cond.body {
-                            self.exec_stmt(stmt);
+                            let s = self.exec_stmt(stmt);
+                            match s {
+                                Return::NoReturn => {},
+                                _ => return s,
+                            }
                         }
-                    return;
+                        return Return::NoReturn;
                     }
                 }
                 for stmt in e {
-                    self.exec_stmt(stmt);
+                    let s = self.exec_stmt(stmt);
+                    match s {
+                        Return::Return(_) => return s,
+                        _ => {},
+                    }
                 }
+                Return::NoReturn
             },
             Stmt::While(c) => {
-                loop {
+                'cond: loop {
                     let res = self.exec_expr(*c.clone().condition);
                     if !Value::is_truthy(res) { break; }
                     for stmt in &c.body {
-                        self.exec_stmt(stmt.clone());
+                        let s = self.exec_stmt(stmt.clone());
+                        match s {
+                            Return::Break => break 'cond,
+                            Return::Return(_) => return s,
+                            _ => {},
+                        }
                     }
+                }
+                Return::NoReturn
+            },
+            Stmt::Break => Return::Break,
+            Stmt::Return(val) => {
+                match val {
+                    None => Return::NoReturn,
+                    Some(e) => Return::Return(self.exec_expr(e)),
                 }
             },
             Stmt::Expr(expr) => {
                 _ = self.exec_expr(expr);
+                Return::NoReturn
             },
         }
     }
 
-    fn interpret(&mut self) {
+    fn interpret(&mut self) -> Option<Value> {
         while self.cur().is_some() {
             match self.cur() {
                 None => {},
-                Some(s) => self.exec_stmt(s),
+                Some(s) => {
+                    let stmt = self.exec_stmt(s);
+                    match stmt {
+                        Return::Return(v) => return Some(v),
+                        _ => {},
+                    }
+                }
             }
             self.pos += 1;
         }
+        None
     }
 }
 
