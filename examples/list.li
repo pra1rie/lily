@@ -1,0 +1,12 @@
+fun main()
+    var list = [69, 420];
+    // append list, 69;
+    // append list, 420;
+    // list[1] = 80085;
+    var i = 0;
+    while i < 2
+        write 'list[i] = ', list[i], '\n';
+        i = i + 1;
+    end
+    write list, '\n';
+end
